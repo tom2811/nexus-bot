@@ -8,6 +8,7 @@ authors = [
 requires-python = ">=3.9"
 dependencies = [
     "fastapi>=0.128.8",
+    "pypdf>=6.19.0",
     "uvicorn>=0.39.0",
 ]
 
@@ -22,4 +23,5 @@ build-backend = "hatchling.build"
 dev = [
     "httpx>=0.28.1",
     "pytest>=8.4.2",
+    "reportlab>=5.0.1",
 ]

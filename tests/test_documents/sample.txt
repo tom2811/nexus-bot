@@ -1,0 +1,2 @@
+This is a sample text document for testing the document loader.
+It contains multiple lines of text that can be used to verify the loading functionality.
