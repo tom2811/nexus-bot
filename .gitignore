@@ -33,6 +33,10 @@ chroma_db/
 *_chroma/
 demo_chroma/
 test_chroma*/
+test_rag_demo/
+
+# Demo/temp files
+test_rag_demo.py
 
 # Logs
 *.log
