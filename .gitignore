@@ -30,6 +30,9 @@ htmlcov/
 
 # Vector DB
 chroma_db/
+*_chroma/
+demo_chroma/
+test_chroma*/
 
 # Logs
 *.log
