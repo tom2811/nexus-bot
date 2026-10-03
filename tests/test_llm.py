@@ -58,9 +58,24 @@ def test_llm_service_custom_config():
     os.environ.pop("OLLAMA_MODEL", None)
 
 
+def is_ollama_available():
+    """Check if Ollama is available."""
+    import httpx
+    # Use same URL detection as LLMService
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    try:
+        response = httpx.get(
+            f"{base_url}/api/tags",
+            timeout=2.0
+        )
+        return response.status_code == 200
+    except (httpx.ConnectError, httpx.TimeoutException, Exception):
+        return False
+
+
 @pytest.mark.skipif(
-    not os.getenv("OLLAMA_RUNNING", "").lower() == "true",
-    reason="Ollama not running (set OLLAMA_RUNNING=true to enable)"
+    not is_ollama_available(),
+    reason="Ollama not running or not available"
 )
 def test_llm_generate():
     """Test LLM generation (requires Ollama running)."""

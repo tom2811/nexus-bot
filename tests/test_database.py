@@ -8,19 +8,10 @@ import pytest
 from app.database import DatabaseConnection, DatabaseError, initialize_database
 
 
-# Test database configuration
-TEST_DB_CONFIG = {
-    "host": os.getenv("DB_HOST", "localhost"),
-    "database": os.getenv("DB_NAME", "nexus_bot_test"),
-    "user": os.getenv("DB_USER", "postgres"),
-    "password": os.getenv("DB_PASSWORD", ""),
-}
-
-
 def is_postgres_available():
     """Check if PostgreSQL is available for testing."""
     try:
-        db = DatabaseConnection(**TEST_DB_CONFIG)
+        db = DatabaseConnection.from_env()
         db.close()
         return True
     except DatabaseError:
@@ -36,9 +27,9 @@ requires_postgres = pytest.mark.skipif(
 @pytest.fixture
 def db():
     """Fixture providing a test database connection."""
-    db = DatabaseConnection(**TEST_DB_CONFIG)
+    db = DatabaseConnection.from_env()
     
-    # Initialize schema
+    # Initialize schema (idempotent - safe to run multiple times)
     schema_file = Path(__file__).parent.parent / "app" / "schema.sql"
     data_file = Path(__file__).parent.parent / "app" / "sample_data.sql"
     
@@ -55,7 +46,7 @@ def db():
 @requires_postgres
 def test_connection_pool_creation():
     """Test that connection pool is created successfully."""
-    db = DatabaseConnection(**TEST_DB_CONFIG)
+    db = DatabaseConnection.from_env()
     
     assert db.pool is not None
     db.close()
