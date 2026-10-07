@@ -1,14 +1,24 @@
 """API endpoints for Nexus-bot assistant."""
 
+import logging
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from app.database import DatabaseConnection
 from app.rag import RAGPipeline
 from app.router import HybridRouter, RouteType
+from app.security import api_key_auth, security
 from app.vector_store import VectorStore
+
+logger = logging.getLogger(__name__)
+
+# Rate limiter
+limiter = Limiter(key_func=get_remote_address)
 
 
 # Request/Response Models
@@ -114,12 +124,19 @@ def get_router() -> HybridRouter:
     status_code=status.HTTP_200_OK,
     responses={
         400: {"model": ErrorResponse, "description": "Invalid request"},
+        401: {"model": ErrorResponse, "description": "Unauthorized"},
+        429: {"model": ErrorResponse, "description": "Too many requests"},
         500: {"model": ErrorResponse, "description": "Internal server error"},
     },
     summary="Query the assistant",
     description="Send a question to the hybrid AI assistant"
 )
-def query_assistant(request: QueryRequest) -> QueryResponse:
+@limiter.limit("30/minute")
+async def query_assistant(
+    http_request: Request,
+    request: QueryRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> QueryResponse:
     """Query the hybrid assistant.
     
     The assistant can answer questions using:
@@ -128,7 +145,9 @@ def query_assistant(request: QueryRequest) -> QueryResponse:
     - Both sources combined for hybrid questions
     
     Args:
+        http_request: FastAPI request (for rate limiting)
         request: Query request with message and optional parameters
+        credentials: Optional API key credentials
         
     Returns:
         Query response with answer, sources, and routing info
@@ -136,6 +155,11 @@ def query_assistant(request: QueryRequest) -> QueryResponse:
     Raises:
         HTTPException: If query fails or parameters are invalid
     """
+    # Verify API key
+    await api_key_auth(http_request, credentials)
+    
+    logger.info(f"Query received: {request.message[:50]}...")
+    
     try:
         hybrid_router = get_router()
         
