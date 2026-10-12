@@ -23,7 +23,7 @@ class LLMService:
         if self.groq_api_key:
             self.provider = "groq"
             self.base_url = "https://api.groq.com/openai/v1/chat/completions"
-            self.model = model or os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+            self.model = model or os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
         else:
             self.provider = "ollama"
             self.base_url = (base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")).rstrip("/") + "/api/generate"
