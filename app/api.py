@@ -133,8 +133,8 @@ def get_router() -> HybridRouter:
 )
 @limiter.limit("30/minute")
 async def query_assistant(
-    http_request: Request,
-    request: QueryRequest,
+    request: Request,
+    query: QueryRequest,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
 ) -> QueryResponse:
     """Query the hybrid assistant.
@@ -145,8 +145,8 @@ async def query_assistant(
     - Both sources combined for hybrid questions
     
     Args:
-        http_request: FastAPI request (for rate limiting)
-        request: Query request with message and optional parameters
+        request: FastAPI request (for rate limiting)
+        query: Query request with message and optional parameters
         credentials: Optional API key credentials
         
     Returns:
@@ -156,22 +156,22 @@ async def query_assistant(
         HTTPException: If query fails or parameters are invalid
     """
     # Verify API key
-    await api_key_auth(http_request, credentials)
+    await api_key_auth(request, credentials)
     
-    logger.info(f"Query received: {request.message[:50]}...")
+    logger.info(f"Query received: {query.message[:50]}...")
     
     try:
         hybrid_router = get_router()
         
         # Parse route type if provided
         route_type = None
-        if request.route_type:
+        if query.route_type:
             try:
-                route_type = RouteType(request.route_type)
+                route_type = RouteType(query.route_type)
             except ValueError:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Invalid route_type: {request.route_type}. "
+                    detail=f"Invalid route_type: {query.route_type}. "
                            f"Must be one of: rag_only, tool_only, hybrid"
                 )
         
@@ -179,17 +179,17 @@ async def query_assistant(
         kwargs = {}
         if route_type:
             kwargs["route_type"] = route_type
-        if request.product_id is not None:
-            kwargs["product_id"] = request.product_id
-        if request.size is not None:
-            kwargs["size"] = request.size
-        if request.order_id is not None:
-            kwargs["order_id"] = request.order_id
-        if request.search_query is not None:
-            kwargs["search_query"] = request.search_query
+        if query.product_id is not None:
+            kwargs["product_id"] = query.product_id
+        if query.size is not None:
+            kwargs["size"] = query.size
+        if query.order_id is not None:
+            kwargs["order_id"] = query.order_id
+        if query.search_query is not None:
+            kwargs["search_query"] = query.search_query
         
         # Query the router
-        result = hybrid_router.query(request.message, **kwargs)
+        result = hybrid_router.query(query.message, **kwargs)
         
         # Convert sources to response model
         sources = [
