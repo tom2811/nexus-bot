@@ -1,7 +1,7 @@
 """API endpoints for Nexus-bot assistant."""
 
 import logging
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials
@@ -37,25 +37,29 @@ class QueryRequest(BaseModel):
         description="Force specific routing (rag_only, tool_only, hybrid)",
         examples=["rag_only", "tool_only", "hybrid"]
     )
-    product_id: Optional[int] = Field(
+    product_id: Optional[Union[int, str]] = Field(
         None,
-        description="Product ID for inventory/product queries",
-        examples=[1]
+        description="Product ID for inventory/product queries (integer or UUID string)",
+        examples=[1, "fbca06da-b5ca-4b2c-ad08-5b3e943777fe"]
     )
     size: Optional[str] = Field(
         None,
         description="Product size for inventory queries",
         examples=["10"]
     )
-    order_id: Optional[int] = Field(
+    order_id: Optional[Union[int, str]] = Field(
         None,
         description="Order ID for order status queries",
-        examples=[1001]
+        examples=[1001, "ord_123"]
     )
     search_query: Optional[str] = Field(
         None,
         description="Search query for product search",
         examples=["Nike"]
+    )
+    product_context: Optional[dict] = Field(
+        None,
+        description="Optional pre-fetched product context from caller"
     )
 
 
