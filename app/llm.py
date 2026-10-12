@@ -22,11 +22,11 @@ class LLMService:
         self.groq_api_key = os.getenv("GROQ_API_KEY")
         if self.groq_api_key:
             self.provider = "groq"
-            self.base_url = "https://api.groq.com/openai/v1/chat/completions"
+            self.base_url = base_url or "https://api.groq.com/openai/v1"
             self.model = model or os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
         else:
             self.provider = "ollama"
-            self.base_url = (base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")).rstrip("/") + "/api/generate"
+            self.base_url = base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
             self.model = model or os.getenv("OLLAMA_MODEL", "llama3.2")
 
         self.timeout = timeout
@@ -64,13 +64,16 @@ class LLMService:
         }
 
         headers = {
-            "Authorization": f"Bearer {self.groq_api_key}",
+            "Authorization": f"Bearer {self.groq_api_key.strip()}",
             "Content-Type": "application/json",
         }
 
         try:
+            url = f"{self.base_url.rstrip('/')}/chat/completions"
             with httpx.Client(timeout=timeout) as client:
-                response = client.post(self.base_url, json=payload, headers=headers)
+                response = client.post(url, json=payload, headers=headers)
+                if response.status_code != 200:
+                    print(f"GROQ ERROR ({response.status_code}): {response.text} | model={self.model}")
                 response.raise_for_status()
                 data = response.json()
                 return data["choices"][0]["message"]["content"]
@@ -100,9 +103,10 @@ class LLMService:
         if system_prompt:
             payload["system"] = system_prompt
 
+        url = f"{self.base_url.rstrip('/')}/api/generate"
         try:
             with httpx.Client(timeout=timeout) as client:
-                response = client.post(self.base_url, json=payload)
+                response = client.post(url, json=payload)
                 response.raise_for_status()
                 return response.json()["response"]
         except httpx.ConnectError:
