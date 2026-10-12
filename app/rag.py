@@ -20,10 +20,10 @@ class RAGPipeline:
         self.llm_service = llm_service or LLMService()
         self.n_results = n_results
     
-    def query(self, question: str) -> Dict[str, any]:
+    def query(self, question: str, collection_name: Optional[str] = None) -> Dict[str, any]:
         """Answer a question using RAG."""
-        # Retrieve relevant documents
-        retrieved = self.vector_store.search(question, n_results=self.n_results)
+        # Retrieve relevant documents from tenant collection
+        retrieved = self.vector_store.search(question, n_results=self.n_results, collection_name=collection_name)
         
         # Handle empty retrieval
         if not retrieved:

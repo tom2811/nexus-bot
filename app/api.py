@@ -61,6 +61,11 @@ class QueryRequest(BaseModel):
         None,
         description="Optional pre-fetched product context from caller"
     )
+    tenant_id: Optional[str] = Field(
+        "general",
+        description="Tenant / application identifier (e.g. kickskraze, pos, general)",
+        examples=["kickskraze", "pos", "general"]
+    )
 
 
 class Source(BaseModel):
@@ -191,6 +196,8 @@ async def query_assistant(
             kwargs["order_id"] = query.order_id
         if query.search_query is not None:
             kwargs["search_query"] = query.search_query
+        if query.tenant_id:
+            kwargs["tenant_id"] = query.tenant_id
         
         # Query the router
         result = hybrid_router.query(query.message, **kwargs)

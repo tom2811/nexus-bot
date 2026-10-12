@@ -38,8 +38,16 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("API key authentication enabled")
     
-    # Startup: Initialize hybrid router
+    # Startup: Initialize hybrid router and auto-ingest documents if needed
     vector_persist_dir = os.getenv("VECTOR_PERSIST_DIR", "./chroma_db")
+    
+    # Auto-seed documents from data/ directory
+    try:
+        from ingest import main as run_ingest
+        run_ingest()
+    except Exception as e:
+        logger.warning(f"Auto-ingest skipped or failed: {e}")
+
     init_router(vector_persist_dir=vector_persist_dir)
     logger.info("Hybrid router initialized")
     

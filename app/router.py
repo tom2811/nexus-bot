@@ -112,27 +112,30 @@ class HybridRouter:
         elif isinstance(route_type, str):
             route_type = RouteType(route_type)
         
+        tenant_id = kwargs.get("tenant_id", "general")
+
         # Route to appropriate handler
         if route_type == RouteType.RAG_ONLY:
-            return self._handle_rag_only(question)
+            return self._handle_rag_only(question, tenant_id=tenant_id)
         elif route_type == RouteType.TOOL_ONLY:
             return self._handle_tool_only(question, **kwargs)
         elif route_type == RouteType.HYBRID:
-            return self._handle_hybrid(question, **kwargs)
+            return self._handle_hybrid(question, tenant_id=tenant_id, **kwargs)
         else:
             # Fallback to RAG
-            return self._handle_rag_only(question)
+            return self._handle_rag_only(question, tenant_id=tenant_id)
     
-    def _handle_rag_only(self, question: str) -> dict[str, Any]:
+    def _handle_rag_only(self, question: str, tenant_id: str = "general") -> dict[str, Any]:
         """Handle RAG-only questions.
         
         Args:
             question: User's question
+            tenant_id: Tenant collection identifier
             
         Returns:
             Result dictionary with RAG answer
         """
-        result = self.rag_pipeline.query(question)
+        result = self.rag_pipeline.query(question, collection_name=tenant_id)
         
         return {
             "answer": result["answer"],
