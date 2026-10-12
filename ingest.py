@@ -26,7 +26,7 @@ def ingest_tenant(data_dir: Path, collection_name: str, persist_dir: str = "./ch
         if file_path.suffix.lower() in [".md", ".txt", ".pdf"] and file_path.is_file():
             print(f"Loading [{collection_name}] -> {file_path.name}")
             docs = load_document(str(file_path))
-            chunks = chunk_documents(docs, chunk_size=500, chunk_overlap=50)
+            chunks = chunk_documents(docs, chunk_size=500, overlap=50)
             all_chunks.extend(chunks)
 
     if all_chunks:
