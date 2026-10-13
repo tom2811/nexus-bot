@@ -577,15 +577,6 @@ wheels = [
 ]
 
 [[package]]
-name = "distro"
-version = "1.9.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/fc/f8/98eea607f65de6527f8a2e8885fc8015d3e6f5775df186e443e0964a11c3/distro-1.9.0.tar.gz", hash = "sha256:2fa77c6fd8940f116ee1d6b94a2f90b13b5ea8d019b98bc8bafdcabcdd9bdbed", size = 60722, upload-time = "2023-12-24T09:54:32.31Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/12/b3/231ffd4ab1fc9d679809f356cebee130ac7daa00d6d6f3206dd4fd137e9e/distro-1.9.0-py3-none-any.whl", hash = "sha256:7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2", size = 20277, upload-time = "2023-12-24T09:54:30.421Z" },
-]
-
-[[package]]
 name = "durationpy"
 version = "0.11"
 source = { registry = "https://pypi.org/simple" }
@@ -1321,6 +1312,15 @@ wheels = [
 ]
 
 [[package]]
+name = "monotonic"
+version = "1.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ea/ca/8e91948b782ddfbd194f323e7e7d9ba12e5877addf04fb2bf8fca38e86ac/monotonic-1.6.tar.gz", hash = "sha256:3a55207bcfed53ddd5c5bae174524062935efed17792e9de2ad0205ce9ad63f7", size = 7615, upload-time = "2021-08-11T14:37:28.79Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9a/67/7e8406a29b6c45be7af7740456f7f37025f0506ae2e05fb9009a53946860/monotonic-1.6-py2.py3-none-any.whl", hash = "sha256:68687e19a14f11f26d140dd5c86f3dba4bf5df58003000ed467e0e2a69bca96c", size = 8154, upload-time = "2021-04-09T21:58:05.122Z" },
+]
+
+[[package]]
 name = "mpmath"
 version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1532,6 +1532,7 @@ dependencies = [
     { name = "httpx" },
     { name = "numpy" },
     { name = "onnxruntime" },
+    { name = "posthog" },
     { name = "psycopg2-binary" },
     { name = "pypdf" },
     { name = "sentence-transformers" },
@@ -1556,6 +1557,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "numpy", specifier = ">=1.26.0" },
     { name = "onnxruntime", specifier = ">=1.19.0" },
+    { name = "posthog", specifier = ">=2.4.2,<3" },
     { name = "psycopg2-binary", specifier = ">=2.9.10" },
     { name = "pypdf", specifier = ">=6.19.0" },
     { name = "sentence-transformers", specifier = ">=5.1.2" },
@@ -2065,17 +2067,18 @@ wheels = [
 
 [[package]]
 name = "posthog"
-version = "7.61.1"
+version = "2.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "backoff" },
-    { name = "distro" },
+    { name = "monotonic" },
+    { name = "python-dateutil" },
     { name = "requests" },
-    { name = "typing-extensions" },
+    { name = "six" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e7/84/9ff5f1cd1b4f35d4d1728bc382f146f34902fcc47bcbf2605c49ed114f35/posthog-7.61.1.tar.gz", hash = "sha256:f80245a340149b991b26aa9c41399e53073d20365f0864a86c8b6b55daa16726", size = 695603, upload-time = "2026-09-30T19:04:14.17Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/02/93/aaa6cf6fe32347bbeffbc48b4bcff3764d50f77d0b5f6dbc6dd22103d7f8/posthog-2.5.0.tar.gz", hash = "sha256:7601ef75b483eb67a6229cafec02da9624f6d46df61066771ca9e3f986284fc3", size = 32828, upload-time = "2023-04-10T19:14:06.636Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8d/c0/f1ca28c21211e4f1f05fd886efad94d8d00cd4f65037c46f9607537e53d2/posthog-7.61.1-py3-none-any.whl", hash = "sha256:fa391cbb333dc3571112eacdf69616470929410d915a6ccce32ae9b4322708cb", size = 812901, upload-time = "2026-09-30T19:04:12.186Z" },
+    { url = "https://files.pythonhosted.org/packages/83/e8/3acf15477d7f1b434435305749afd3fcf783e28160f751c242de2eadff62/posthog-2.5.0-py2.py3-none-any.whl", hash = "sha256:3d3ece06c3fe4135497c239f211c82344962b93e4fd4ba5afd20bd4ad12d77be", size = 36282, upload-time = "2023-04-10T19:14:04.959Z" },
 ]
 
 [[package]]

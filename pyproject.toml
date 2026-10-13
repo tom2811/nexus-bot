@@ -12,6 +12,7 @@ dependencies = [
     "httpx>=0.28.1",
     "numpy>=1.26.0",
     "onnxruntime>=1.19.0",
+    "posthog>=2.4.2,<3",
     "psycopg2-binary>=2.9.10",
     "pypdf>=6.19.0",
     "sentence-transformers>=5.1.2",

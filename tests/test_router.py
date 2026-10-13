@@ -383,3 +383,61 @@ def test_router_with_custom_llm(rag_pipeline, db):
     )
     
     assert router.llm == custom_llm
+
+
+def test_product_context_answers_without_database():
+    """Reusable hosts supply catalog data; do not require local product IDs."""
+    from unittest.mock import MagicMock
+
+    rag = MagicMock()
+    router = HybridRouter(rag_pipeline=rag, db=MagicMock())
+    result = router.query(
+        "Is size 10 in stock?",
+        product_context={
+            "name": "Air Max",
+            "brand": "Nike",
+            "retailPrice": 180,
+            "availableSizes": ["9", "10"],
+            "inStock": True,
+        },
+        size="10",
+    )
+
+    assert result["route_type"] == RouteType.TOOL_ONLY.value
+    assert "caller_catalog" in result["tools_used"]
+    assert "10" in result["answer"]
+    assert "Air Max" in result["answer"]
+    rag.query.assert_not_called()
+
+
+def test_hybrid_query_uses_tenant_collection():
+    """Hybrid RAG must search the caller's tenant, not the default collection."""
+    from unittest.mock import MagicMock
+
+    rag = MagicMock()
+    rag.query.return_value = {
+        "answer": "14-day returns",
+        "sources": [{"source": "return_policy.md"}],
+        "context_used": True,
+    }
+    llm = MagicMock()
+    llm.generate.return_value = "Size 10 is in stock. Returns are 14 days."
+    router = HybridRouter(rag_pipeline=rag, db=MagicMock(), llm=llm)
+
+    router.query(
+        "Is size 10 in stock and what's the return policy?",
+        tenant_id="kickskraze",
+        size="10",
+        product_context={
+            "name": "Air Max",
+            "brand": "Nike",
+            "availableSizes": ["10"],
+            "inStock": True,
+            "retailPrice": 180,
+        },
+    )
+
+    rag.query.assert_called_with(
+        "Is size 10 in stock and what's the return policy?",
+        collection_name="kickskraze",
+    )

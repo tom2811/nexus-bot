@@ -3,6 +3,7 @@
 Routes questions to appropriate handlers based on intent detection.
 """
 
+import re
 from enum import Enum
 from typing import Any, Optional
 
@@ -120,7 +121,8 @@ class HybridRouter:
         elif route_type == RouteType.TOOL_ONLY:
             return self._handle_tool_only(question, **kwargs)
         elif route_type == RouteType.HYBRID:
-            return self._handle_hybrid(question, tenant_id=tenant_id, **kwargs)
+            kwargs["tenant_id"] = tenant_id
+            return self._handle_hybrid(question, **kwargs)
         else:
             # Fallback to RAG
             return self._handle_rag_only(question, tenant_id=tenant_id)
@@ -157,6 +159,15 @@ class HybridRouter:
         """
         tools_used = []
         tool_results = []
+
+        # Host apps (e.g. Kickskraze) pass live catalog data so this bot
+        # does not need their product IDs in the local Postgres schema.
+        if kwargs.get("product_context"):
+            return self._handle_product_context(
+                question,
+                kwargs["product_context"],
+                kwargs.get("size"),
+            )
         
         # Try to extract parameters from kwargs or question
         # This is simplified - in production, use NER or structured input
@@ -221,10 +232,10 @@ class HybridRouter:
         Returns:
             Result dictionary combining RAG and tool responses
         """
-        # Get RAG response
-        rag_result = self.rag_pipeline.query(question)
+        tenant_id = kwargs.get("tenant_id", "general")
+        rag_result = self.rag_pipeline.query(question, collection_name=tenant_id)
         
-        # Get tool responses
+        # Get tool responses (caller catalog context or local DB tools)
         tool_result = self._handle_tool_only(question, **kwargs)
         
         # Combine context
@@ -315,6 +326,59 @@ Provide a clear, helpful answer:"""
         
         # Let errors propagate - caller decides how to handle
         return self.llm.generate(prompt, temperature=0.7, timeout=30)
+
+    def _handle_product_context(
+        self,
+        question: str,
+        product_context: dict,
+        size: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Answer inventory/product questions from caller-supplied catalog data."""
+        answer = self._format_product_context_answer(question, product_context, size)
+        return {
+            "answer": answer,
+            "sources": [],
+            "route_type": RouteType.TOOL_ONLY.value,
+            "rag_used": False,
+            "tools_used": ["caller_catalog"],
+            "tool_results": [product_context],
+        }
+
+    def _format_product_context_answer(
+        self,
+        question: str,
+        ctx: dict,
+        size: Optional[str] = None,
+    ) -> str:
+        name = ctx.get("name") or "this product"
+        brand = ctx.get("brand") or ""
+        label = f"{brand} {name}".strip()
+        sizes = ctx.get("availableSizes") or ctx.get("available_sizes") or []
+        price = ctx.get("retailPrice", ctx.get("retail_price"))
+        in_stock = ctx.get("inStock") if "inStock" in ctx else ctx.get("in_stock")
+
+        target = size
+        if not target:
+            match = re.search(r"\b\d+(?:\.\d+)?\b", question)
+            target = match.group(0) if match else None
+
+        size_labels = [str(s) for s in sizes]
+        price_bit = f" at ${float(price):.2f}" if price is not None else ""
+
+        if target:
+            if str(target) in size_labels:
+                return f"Yes, size {target} for {label} is in stock{price_bit}."
+            available = ", ".join(size_labels) or "none"
+            return (
+                f"Size {target} for {label} is currently out of stock. "
+                f"Available sizes: {available}."
+            )
+
+        if in_stock is False or not size_labels:
+            return f"{label} is currently out of stock."
+
+        available = ", ".join(size_labels)
+        return f"{label} is in stock{price_bit}. Available sizes: {available}."
     
     def _combine_rag_and_tools(
         self,

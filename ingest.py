@@ -20,6 +20,11 @@ def ingest_tenant(data_dir: Path, collection_name: str, persist_dir: str = "./ch
         return
 
     vector_store = VectorStore(persist_directory=persist_dir, collection_name=collection_name)
+    existing = vector_store.count()
+    if existing > 0:
+        print(f"Collection '{collection_name}' already has {existing} chunks, skipping ingest")
+        return
+
     all_chunks = []
 
     for file_path in data_dir.glob("**/*"):
@@ -37,19 +42,30 @@ def ingest_tenant(data_dir: Path, collection_name: str, persist_dir: str = "./ch
         print(f"No documents found for collection '{collection_name}'.")
 
 
-def main():
+def main(data_root: Path | None = None, persist_dir: str | None = None):
     root_dir = Path(__file__).parent
-    persist_dir = os.getenv("VECTOR_PERSIST_DIR", "./chroma_db")
-    data_root = root_dir / "data"
+    persist_dir = persist_dir or os.getenv("VECTOR_PERSIST_DIR", "./chroma_db")
+    data_root = data_root or (root_dir / "data")
 
     if not data_root.exists():
         print("No 'data' folder found.")
         return
 
+    # Optional: TENANT_IDS=kickskraze,pos  — ingest only those folders.
+    allowed = os.getenv("TENANT_IDS")
+    allowed_set = (
+        {name.strip().lower() for name in allowed.split(",") if name.strip()}
+        if allowed
+        else None
+    )
+
     # Ingest each subdirectory under data/ as its own collection
     for tenant_dir in data_root.iterdir():
         if tenant_dir.is_dir():
             tenant_name = tenant_dir.name.lower()
+            if allowed_set is not None and tenant_name not in allowed_set:
+                print(f"\n--- Skipping Tenant: {tenant_name} (not in TENANT_IDS) ---")
+                continue
             print(f"\n--- Ingesting Tenant: {tenant_name} ---")
             ingest_tenant(tenant_dir, collection_name=tenant_name, persist_dir=persist_dir)
 

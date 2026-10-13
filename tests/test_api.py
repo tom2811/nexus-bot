@@ -162,6 +162,57 @@ class TestQueryEndpoint:
         mock_router.query.assert_called_once()
         call_kwargs = mock_router.query.call_args[1]
         assert "route_type" in call_kwargs
+
+    @patch("app.api.get_router")
+    def test_query_accepts_sources_without_chunk_id(self, mock_get_router, client, mock_router):
+        """RAG sources omit chunk_id; the API must still return 200."""
+        mock_router.query.return_value = {
+            "answer": "Returns within 14 days.",
+            "sources": [{"source": "return_policy.md"}],
+            "route_type": "rag_only",
+            "rag_used": True,
+            "tools_used": [],
+            "tool_results": [],
+        }
+        mock_get_router.return_value = mock_router
+
+        response = client.post(
+            "/api/v1/query",
+            json={"message": "What is the return policy?", "tenant_id": "kickskraze"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["sources"][0]["source"] == "return_policy.md"
+        assert response.json()["sources"][0]["chunk_id"] is None
+
+    @patch("app.api.get_router")
+    def test_query_forwards_product_context(self, mock_get_router, client, mock_router):
+        """Host apps pass live catalog context instead of local product IDs."""
+        mock_get_router.return_value = mock_router
+        product_context = {
+            "name": "Air Max",
+            "brand": "Nike",
+            "availableSizes": ["10"],
+            "inStock": True,
+            "retailPrice": 180,
+        }
+
+        response = client.post(
+            "/api/v1/query",
+            json={
+                "message": "Is size 10 in stock?",
+                "product_id": "fbca06da-b5ca-4b2c-ad08-5b3e943777fe",
+                "size": "10",
+                "tenant_id": "kickskraze",
+                "product_context": product_context,
+            },
+        )
+
+        assert response.status_code == 200
+        kwargs = mock_router.query.call_args.kwargs
+        assert kwargs["tenant_id"] == "kickskraze"
+        assert kwargs["product_context"]["name"] == "Air Max"
+        assert kwargs["size"] == "10"
     
     def test_query_empty_message(self, client):
         """Test query with empty message."""

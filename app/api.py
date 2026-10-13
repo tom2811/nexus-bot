@@ -72,7 +72,7 @@ class Source(BaseModel):
     """Source information for retrieved documents."""
     
     source: str = Field(..., description="Source document filename")
-    chunk_id: str = Field(..., description="Chunk identifier")
+    chunk_id: Optional[str] = Field(None, description="Chunk identifier")
 
 
 class QueryResponse(BaseModel):
@@ -198,15 +198,22 @@ async def query_assistant(
             kwargs["search_query"] = query.search_query
         if query.tenant_id:
             kwargs["tenant_id"] = query.tenant_id
+        if query.product_context:
+            kwargs["product_context"] = query.product_context
         
         # Query the router
         result = hybrid_router.query(query.message, **kwargs)
         
         # Convert sources to response model
-        sources = [
-            Source(source=src["source"], chunk_id=src["chunk_id"])
-            for src in result.get("sources", [])
-        ]
+        sources = []
+        for src in result.get("sources", []):
+            chunk = src.get("chunk_id")
+            sources.append(
+                Source(
+                    source=src.get("source", "unknown"),
+                    chunk_id=str(chunk) if chunk is not None else None,
+                )
+            )
         
         # Build response
         return QueryResponse(

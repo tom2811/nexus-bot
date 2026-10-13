@@ -28,6 +28,11 @@ class VectorStore:
             embedding_function=self.embedding_service.embedding_function,
         )
     
+    def count(self, collection_name: Optional[str] = None) -> int:
+        """Return the number of documents in the collection."""
+        target_col = self._get_collection(collection_name) if collection_name else self.collection
+        return target_col.count()
+
     def add_documents(self, documents: List[Dict[str, str]], collection_name: Optional[str] = None) -> None:
         """Add documents to the vector store."""
         if not documents:

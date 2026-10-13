@@ -101,6 +101,8 @@ Answer the question based on the context above. Be concise and accurate."""
             }
             if 'page' in metadata:
                 source_info['page'] = metadata['page']
+            if 'chunk_id' in metadata:
+                source_info['chunk_id'] = str(metadata['chunk_id'])
             
             sources.append(source_info)
         
