@@ -1,11 +1,15 @@
 """Evaluation system for Nexus-bot hybrid assistant.
 
-Measures routing accuracy, tool selection, and source attribution.
+Measures routing accuracy, tool selection, source attribution, retrieval
+precision/recall, and (optionally) answer faithfulness via a judge.
 """
 
+import json
+import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from pathlib import Path
+from typing import Any, Protocol
 
 from app.router import HybridRouter
 
@@ -16,6 +20,97 @@ class QuestionType(str, Enum):
     TOOL_ONLY = "tool_only"
     HYBRID = "hybrid"
     NO_INFO = "no_info"
+
+
+class Judge(Protocol):
+    """Scores how well an answer is supported by its context (0..1)."""
+
+    def score(self, question: str, answer: str, context: str) -> float: ...
+
+
+class EmbeddingJudge:
+    """Faithfulness proxy via answer<->context embedding similarity.
+
+    Dependency-light default: uses a local sentence-transformers model, so
+    evaluation needs no external API. It is a proxy, not a verdict -- a
+    semantic overlap score, not entailment.
+    """
+
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+        self.model_name = model_name
+        self._model = None
+
+    def _load(self):
+        if self._model is None:
+            from sentence_transformers import SentenceTransformer
+
+            self._model = SentenceTransformer(self.model_name)
+        return self._model
+
+    def score(self, question: str, answer: str, context: str) -> float:
+        import numpy as np
+
+        if not answer.strip() or not context.strip():
+            return 0.0
+        model = self._load()
+        answer_vec, context_vec = model.encode(
+            [answer, context], normalize_embeddings=True
+        )
+        return float(np.clip(float(answer_vec @ context_vec), 0.0, 1.0))
+
+
+class ModelJudge:
+    """Faithfulness judge backed by the configured LLM (self-reported)."""
+
+    def __init__(self, llm):
+        self.llm = llm
+
+    def score(self, question: str, answer: str, context: str) -> float:
+        prompt = (
+            "Rate from 0.0 to 1.0 how fully the answer is supported by the "
+            "context. Reply with the number only.\n\n"
+            f"Context:\n{context}\n\nQuestion: {question}\nAnswer: {answer}\n\nScore:"
+        )
+        raw = self.llm.generate(prompt, temperature=0.0, timeout=60)
+        match = re.search(r"\d*\.?\d+", raw or "")
+        if not match:
+            return 0.0
+        return max(0.0, min(1.0, float(match.group())))
+
+
+def _grounding_text(response: dict) -> str:
+    """Assemble the context an answer should be grounded in."""
+    parts: list[str] = []
+    if response.get("context"):
+        parts.append(str(response["context"]))
+    for tool_result in response.get("tool_results", []) or []:
+        parts.append(json.dumps(tool_result, default=str))
+    return "\n".join(parts)
+
+
+def load_dataset(path: str | Path) -> list["EvaluationQuestion"]:
+    """Load an evaluation dataset from a JSONL file (one question per line)."""
+    questions: list[EvaluationQuestion] = []
+    for line in Path(path).read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        raw = json.loads(line)
+        questions.append(
+            EvaluationQuestion(
+                id=raw["id"],
+                question=raw["question"],
+                question_type=QuestionType(raw.get("question_type", "rag_only")),
+                expected_route=raw["expected_route"],
+                expected_tools=raw.get("expected_tools", []),
+                expected_sources=raw.get("expected_sources", False),
+                parameters=raw.get("parameters", {}),
+                ground_truth=raw.get("ground_truth"),
+                relevant_sources=raw.get("relevant_sources"),
+                notes=raw.get("notes"),
+            )
+        )
+    return questions
 
 
 @dataclass
@@ -29,6 +124,7 @@ class EvaluationQuestion:
     expected_sources: bool
     parameters: dict[str, Any]
     ground_truth: str | None = None
+    relevant_sources: list[str] | None = None
     notes: str | None = None
 
 
@@ -50,6 +146,9 @@ class EvaluationResult:
     sources: list[dict]
     tool_results: list[dict]
     ground_truth: str | None = None
+    retrieval_precision: float | None = None
+    retrieval_recall: float | None = None
+    faithfulness: float | None = None
     notes: str | None = None
 
 
@@ -422,38 +521,49 @@ class EvaluationDataset:
 
 class Evaluator:
     """Evaluates hybrid assistant performance."""
-    
-    def __init__(self, router: HybridRouter):
+
+    def __init__(self, router: HybridRouter, judge: Judge | None = None):
         """Initialize evaluator.
-        
+
         Args:
             router: HybridRouter instance to evaluate
+            judge: Optional faithfulness judge (EmbeddingJudge/ModelJudge)
         """
         self.router = router
-    
+        self.judge = judge
+
     def evaluate_question(self, question: EvaluationQuestion) -> EvaluationResult:
         """Evaluate a single question.
-        
+
         Args:
             question: Question to evaluate
-            
+
         Returns:
             Evaluation result with routing and quality metrics
         """
-        response = self.router.query(
-            message=question.question,
-            **question.parameters
-        )
-        
+        response = self.router.query(question.question, **question.parameters)
+
         route_correct = response["route_type"] == question.expected_route
-        
+
         actual_tools = set(response.get("tools_used", []))
         expected_tools = set(question.expected_tools)
         tools_correct = actual_tools == expected_tools
-        
+
         has_sources = len(response.get("sources", [])) > 0
         sources_correct = has_sources == question.expected_sources
-        
+
+        precision, recall = self._retrieval_metrics(
+            question.relevant_sources, response.get("retrieval", [])
+        )
+
+        faithfulness = None
+        if self.judge is not None:
+            faithfulness = self.judge.score(
+                question.question,
+                response.get("answer", ""),
+                _grounding_text(response),
+            )
+
         return EvaluationResult(
             question_id=question.id,
             question=question.question,
@@ -470,49 +580,84 @@ class Evaluator:
             sources=response.get("sources", []),
             tool_results=response.get("tool_results", []),
             ground_truth=question.ground_truth,
-            notes=question.notes
+            retrieval_precision=precision,
+            retrieval_recall=recall,
+            faithfulness=faithfulness,
+            notes=question.notes,
         )
-    
+
+    @staticmethod
+    def _retrieval_metrics(
+        relevant: list[str] | None, retrieval: list[dict]
+    ) -> tuple[float | None, float | None]:
+        """Precision/recall of retrieved sources vs. an expected set."""
+        if relevant is None:
+            return None, None
+        expected = set(relevant)
+        retrieved = [r.get("source") for r in retrieval if r.get("source")]
+        hits = sum(1 for source in retrieved if source in expected)
+        precision = hits / len(retrieved) if retrieved else 0.0
+        recall = hits / len(expected) if expected else 0.0
+        return precision, recall
+
     def evaluate_all(self, questions: list[EvaluationQuestion] | None = None) -> dict:
         """Evaluate all questions and return summary metrics.
-        
+
         Args:
             questions: Optional list of questions (uses default dataset if None)
-            
+
         Returns:
             Dictionary with evaluation metrics and results
         """
         if questions is None:
             questions = EvaluationDataset.get_questions()
-        
-        results = []
+
+        paired: list[tuple[EvaluationQuestion, EvaluationResult]] = []
         for question in questions:
             try:
-                result = self.evaluate_question(question)
-                results.append(result)
+                paired.append((question, self.evaluate_question(question)))
             except Exception as e:
                 print(f"Error evaluating {question.id}: {e}")
                 continue
-        
+
+        results = [result for _, result in paired]
         total = len(results)
-        route_correct = sum(1 for r in results if r.route_correct)
-        tools_correct = sum(1 for r in results if r.tools_correct)
-        sources_correct = sum(1 for r in results if r.sources_correct)
-        
+
+        def count(pred) -> int:
+            return sum(1 for r in results if pred(r))
+
+        route_correct = count(lambda r: r.route_correct)
+        tools_correct = count(lambda r: r.tools_correct)
+        sources_correct = count(lambda r: r.sources_correct)
+
+        def mean(values: list[float]) -> float | None:
+            return sum(values) / len(values) if values else None
+
+        retrieval_precision = mean(
+            [r.retrieval_precision for r in results if r.retrieval_precision is not None]
+        )
+        retrieval_recall = mean(
+            [r.retrieval_recall for r in results if r.retrieval_recall is not None]
+        )
+        faithfulness = mean(
+            [r.faithfulness for r in results if r.faithfulness is not None]
+        )
+
         by_type = {}
         for q_type in QuestionType:
-            type_results = [r for r, q in zip(results, questions) if q.question_type == q_type]
+            type_results = [r for q, r in paired if q.question_type == q_type]
             if type_results:
+                n = len(type_results)
                 by_type[q_type.value] = {
-                    "total": len(type_results),
+                    "total": n,
                     "route_correct": sum(1 for r in type_results if r.route_correct),
                     "tools_correct": sum(1 for r in type_results if r.tools_correct),
                     "sources_correct": sum(1 for r in type_results if r.sources_correct),
-                    "route_accuracy": sum(1 for r in type_results if r.route_correct) / len(type_results),
-                    "tools_accuracy": sum(1 for r in type_results if r.tools_correct) / len(type_results),
-                    "sources_accuracy": sum(1 for r in type_results if r.sources_correct) / len(type_results),
+                    "route_accuracy": sum(1 for r in type_results if r.route_correct) / n,
+                    "tools_accuracy": sum(1 for r in type_results if r.tools_correct) / n,
+                    "sources_accuracy": sum(1 for r in type_results if r.sources_correct) / n,
                 }
-        
+
         return {
             "total_questions": total,
             "route_correct": route_correct,
@@ -521,10 +666,31 @@ class Evaluator:
             "route_accuracy": route_correct / total if total > 0 else 0,
             "tools_accuracy": tools_correct / total if total > 0 else 0,
             "sources_accuracy": sources_correct / total if total > 0 else 0,
+            "retrieval_precision": retrieval_precision,
+            "retrieval_recall": retrieval_recall,
+            "faithfulness": faithfulness,
             "by_type": by_type,
             "results": results,
         }
-    
+
+    @staticmethod
+    def check_thresholds(
+        evaluation: dict, thresholds: dict[str, float]
+    ) -> list[str]:
+        """Return human-readable failures for any metric below its threshold."""
+        failures = []
+        for metric, minimum in thresholds.items():
+            if minimum is None:
+                continue
+            value = evaluation.get(metric)
+            if value is None:
+                failures.append(f"{metric}: not measured (threshold {minimum:.0%})")
+            elif value < minimum:
+                failures.append(
+                    f"{metric}: {value:.1%} < required {minimum:.0%}"
+                )
+        return failures
+
     def print_summary(self, evaluation: dict):
         """Print evaluation summary.
         
@@ -539,6 +705,13 @@ class Evaluator:
         print(f"Route Accuracy: {evaluation['route_accuracy']:.1%} ({evaluation['route_correct']}/{evaluation['total_questions']})")
         print(f"Tool Selection: {evaluation['tools_accuracy']:.1%} ({evaluation['tools_correct']}/{evaluation['total_questions']})")
         print(f"Source Correctness: {evaluation['sources_accuracy']:.1%} ({evaluation['sources_correct']}/{evaluation['total_questions']})")
+
+        if evaluation.get("retrieval_precision") is not None:
+            print(f"Retrieval Precision: {evaluation['retrieval_precision']:.1%}")
+        if evaluation.get("retrieval_recall") is not None:
+            print(f"Retrieval Recall: {evaluation['retrieval_recall']:.1%}")
+        if evaluation.get("faithfulness") is not None:
+            print(f"Faithfulness (judge proxy): {evaluation['faithfulness']:.1%}")
         
         print("\n" + "-"*80)
         print("BY QUESTION TYPE")

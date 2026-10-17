@@ -40,19 +40,17 @@ requires_postgres = pytest.mark.skipif(
 @pytest.fixture
 def db():
     """Fixture providing a test database connection."""
-    db = DatabaseConnection(**TEST_DB_CONFIG)
-    
-    # Initialize schema
     schema_file = Path(__file__).parent.parent / "app" / "schema.sql"
     data_file = Path(__file__).parent.parent / "app" / "sample_data.sql"
-    
+
     try:
+        db = DatabaseConnection(**TEST_DB_CONFIG)
         initialize_database(db, str(schema_file), str(data_file))
     except Exception:
         pytest.skip("Cannot initialize test database")
-    
+
     yield db
-    
+
     db.close()
 
 
@@ -441,3 +439,63 @@ def test_hybrid_query_uses_tenant_collection():
         "Is size 10 in stock and what's the return policy?",
         collection_name="kickskraze",
     )
+
+
+def test_arbitrary_product_context_uses_llm():
+    """Caller data in an unknown shape is answered by the LLM over the raw data."""
+    from unittest.mock import MagicMock
+
+    rag = MagicMock()
+    llm = MagicMock()
+    llm.generate.return_value = "The Grand has 3 rooms available."
+    router = HybridRouter(rag_pipeline=rag, db=MagicMock(), llm=llm)
+
+    result = router.query(
+        "Are rooms available at the Grand?",
+        product_context={"hotel": "Grand", "rooms": 3},
+    )
+
+    assert result["route_type"] == RouteType.TOOL_ONLY.value
+    assert "caller_data" in result["tools_used"]
+    assert result["answer"] == "The Grand has 3 rooms available."
+    rag.query.assert_not_called()
+
+
+def test_message_only_query_derives_search():
+    """A free-text tool question searches the catalog with no structured fields."""
+    from unittest.mock import MagicMock
+
+    rag = MagicMock()
+    db = MagicMock()
+    db.execute_query.return_value = [
+        {"id": 1, "name": "Crocs", "description": "", "brand": "Crocs",
+         "category": "SNEAKERS", "price": 50}
+    ]
+    llm = MagicMock()
+    llm.generate.return_value = "Yes, Crocs are in stock."
+    router = HybridRouter(rag_pipeline=rag, db=db, llm=llm)
+
+    result = router.query("is crocs size 10 available?")
+
+    assert "search" in result["tools_used"]
+    assert result["answer"] == "Yes, Crocs are in stock."
+    rag.query.assert_not_called()
+
+
+def test_message_only_query_falls_back_to_rag():
+    """With no data at all, a tool-intent message answers from documents."""
+    from unittest.mock import MagicMock
+
+    rag = MagicMock()
+    rag.query.return_value = {
+        "answer": "Here is what our documents say.",
+        "sources": [{"source": "faq.md"}],
+        "context_used": True,
+    }
+    router = HybridRouter(rag_pipeline=rag, db=MagicMock())
+
+    result = router.query("check stock")
+
+    assert result["route_type"] == RouteType.RAG_ONLY.value
+    assert result["rag_used"] is True
+    rag.query.assert_called_once()

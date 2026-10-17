@@ -1,10 +1,36 @@
 """Tests for RAG pipeline."""
 
+import os
+
 import pytest
 
-from app.rag import RAGPipeline
+from app.rag import RAGPipeline, _source_name
 from app.vector_store import VectorStore
 from app.llm import LLMService
+
+
+def test_source_name_strips_path():
+    assert _source_name("/Users/x/data/kickskraze/return_policy.md") == "return_policy.md"
+    assert _source_name("policy.txt") == "policy.txt"
+    assert _source_name(None) == "unknown"
+
+
+def is_llm_available():
+    """True when a live LLM backend (Groq key or reachable Ollama) exists."""
+    if os.getenv("GROQ_API_KEY"):
+        return True
+    try:
+        import httpx
+
+        base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        return httpx.get(f"{base_url}/api/tags", timeout=1).status_code == 200
+    except Exception:
+        return False
+
+
+requires_llm = pytest.mark.skipif(
+    not is_llm_available(), reason="No live LLM backend (Groq/Ollama) available"
+)
 
 
 @pytest.fixture
@@ -71,6 +97,7 @@ def test_query_with_empty_store(vector_store):
     assert "don't have enough information" in result["answer"].lower()
 
 
+@requires_llm
 def test_query_with_documents(vector_store, sample_documents):
     """Test querying with documents returns answer and sources."""
     vector_store.add_documents(sample_documents)

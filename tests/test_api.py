@@ -337,6 +337,73 @@ class TestQueryEndpoint:
         assert call_kwargs["search_query"] == "Nike"
 
 
+class TestGroundingContract:
+    """Tests for the versioned grounding contract."""
+
+    @patch("app.api.get_router")
+    def test_product_grounding_forwarded(self, mock_get_router, client, mock_router):
+        mock_get_router.return_value = mock_router
+        response = client.post(
+            "/api/v1/query",
+            json={
+                "message": "Is size 10 in stock?",
+                "api_version": "1",
+                "grounding": {
+                    "kind": "product",
+                    "data": {"name": "Air Max", "availableSizes": ["10"]},
+                },
+            },
+        )
+        assert response.status_code == 200
+        kwargs = mock_router.query.call_args.kwargs
+        assert kwargs["grounding"]["kind"] == "product"
+        assert kwargs["grounding"]["data"]["availableSizes"] == ["10"]
+        assert kwargs["api_version"] == "1"
+
+    def test_unknown_grounding_kind_rejected(self, client):
+        response = client.post(
+            "/api/v1/query",
+            json={"message": "hi", "grounding": {"kind": "mystery", "data": {}}},
+        )
+        assert response.status_code == 422
+        assert "Unknown grounding kind" in response.json()["detail"]
+
+    def test_invalid_product_grounding_rejected(self, client):
+        response = client.post(
+            "/api/v1/query",
+            json={"message": "hi", "grounding": {"kind": "product", "data": {"name": "X"}}},
+        )
+        assert response.status_code == 422
+
+    @patch("app.api.get_router")
+    def test_provider_error_maps_to_503(self, mock_get_router, client, mock_router):
+        from app.providers import ProviderError
+
+        mock_router.query.side_effect = ProviderError("all providers down")
+        mock_get_router.return_value = mock_router
+        response = client.post("/api/v1/query", json={"message": "hi"})
+        assert response.status_code == 503
+        assert "LLM service unavailable" in response.json()["detail"]
+
+    @patch("app.api.get_router")
+    def test_response_includes_api_version_and_trace(self, mock_get_router, client, mock_router):
+        mock_router.query.return_value = {
+            "answer": "Test answer",
+            "sources": [],
+            "route_type": "rag_only",
+            "rag_used": True,
+            "tools_used": [],
+            "tool_results": [],
+            "trace": {"api_version": "1", "route": "rag_only", "trace_id": "abc123"},
+        }
+        mock_get_router.return_value = mock_router
+        response = client.post("/api/v1/query", json={"message": "hi"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["api_version"] == "1"
+        assert data["trace"]["trace_id"] == "abc123"
+
+
 class TestAPIDocumentation:
     """Tests for API documentation."""
     

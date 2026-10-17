@@ -1,9 +1,17 @@
 """RAG pipeline combining retrieval and LLM generation."""
 
+import os
 from typing import Dict, List, Optional
 
 from app.vector_store import VectorStore
 from app.llm import LLMService
+
+
+def _source_name(value: Optional[str]) -> str:
+    """Reduce a stored path to a bare filename for client-facing sources."""
+    if not value:
+        return "unknown"
+    return os.path.basename(str(value).replace("\\", "/"))
 
 
 class RAGPipeline:
@@ -31,6 +39,7 @@ class RAGPipeline:
                 "answer": "I don't have enough information to answer that question.",
                 "sources": [],
                 "context_used": False,
+                "retrieval": [],
             }
         
         # Build context from retrieved documents
@@ -46,11 +55,23 @@ class RAGPipeline:
         
         # Format sources
         sources = self._format_sources(retrieved)
+
+        # Raw retrieval signal for tracing/eval (scores preserved).
+        retrieval = [
+            {
+                "source": _source_name(doc["metadata"].get("source")),
+                "chunk_id": doc["metadata"].get("chunk_id"),
+                "distance": doc.get("distance"),
+            }
+            for doc in retrieved
+        ]
         
         return {
             "answer": answer.strip(),
             "sources": sources,
             "context_used": True,
+            "context": context,
+            "retrieval": retrieval,
         }
     
     def _build_context(self, retrieved: List[Dict]) -> str:
@@ -83,7 +104,7 @@ Answer the question based on the context above. Be concise and accurate."""
         
         for doc in retrieved:
             metadata = doc['metadata']
-            source = metadata.get('source', 'unknown')
+            source = _source_name(metadata.get('source'))
             
             # Build unique source identifier
             source_id = source

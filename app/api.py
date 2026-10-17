@@ -9,7 +9,9 @@ from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
+from app.contract import Grounding, UnknownGroundingKind, resolve_grounding
 from app.database import DatabaseConnection
+from app.providers import ProviderError
 from app.rag import RAGPipeline
 from app.router import HybridRouter, RouteType
 from app.security import api_key_auth, security
@@ -42,7 +44,7 @@ class QueryRequest(BaseModel):
         description="Product ID for inventory/product queries (integer or UUID string)",
         examples=[1, "fbca06da-b5ca-4b2c-ad08-5b3e943777fe"]
     )
-    size: Optional[str] = Field(
+    size: Optional[Union[str, int]] = Field(
         None,
         description="Product size for inventory queries",
         examples=["10"]
@@ -66,6 +68,15 @@ class QueryRequest(BaseModel):
         description="Tenant / application identifier (e.g. kickskraze, pos, general)",
         examples=["kickskraze", "pos", "general"]
     )
+    api_version: str = Field(
+        "1",
+        description="Host<->bot contract version",
+    )
+    grounding: Optional[Grounding] = Field(
+        None,
+        description="Declared host data: {kind, data}. kind must be a registered shape "
+                    "(product, order, generic).",
+    )
 
 
 class Source(BaseModel):
@@ -86,6 +97,10 @@ class QueryResponse(BaseModel):
     tool_results: list[dict[str, Any]] = Field(
         default_factory=list,
         description="Raw tool results"
+    )
+    api_version: str = Field("1", description="Host<->bot contract version")
+    trace: Optional[dict[str, Any]] = Field(
+        None, description="Per-request trace (route, retrieval, tools, provider, latency)"
     )
 
 
@@ -170,8 +185,6 @@ async def query_assistant(
     logger.info(f"Query received: {query.message[:50]}...")
     
     try:
-        hybrid_router = get_router()
-        
         # Parse route type if provided
         route_type = None
         if query.route_type:
@@ -186,12 +199,27 @@ async def query_assistant(
         
         # Build kwargs for router
         kwargs = {}
+        if query.api_version:
+            kwargs["api_version"] = query.api_version
         if route_type:
             kwargs["route_type"] = route_type
+        if query.grounding:
+            try:
+                resolved = resolve_grounding(query.grounding.kind, query.grounding.data)
+            except UnknownGroundingKind as e:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+                )
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Invalid grounding data: {e}",
+                )
+            kwargs["grounding"] = {"kind": resolved.kind, "data": resolved.data}
         if query.product_id is not None:
             kwargs["product_id"] = query.product_id
         if query.size is not None:
-            kwargs["size"] = query.size
+            kwargs["size"] = str(query.size)
         if query.order_id is not None:
             kwargs["order_id"] = query.order_id
         if query.search_query is not None:
@@ -202,6 +230,7 @@ async def query_assistant(
             kwargs["product_context"] = query.product_context
         
         # Query the router
+        hybrid_router = get_router()
         result = hybrid_router.query(query.message, **kwargs)
         
         # Convert sources to response model
@@ -222,12 +251,20 @@ async def query_assistant(
             rag_used=result["rag_used"],
             tools_used=result["tools_used"],
             sources=sources,
-            tool_results=result.get("tool_results", [])
+            tool_results=result.get("tool_results", []),
+            api_version=result.get("trace", {}).get("api_version", query.api_version),
+            trace=result.get("trace"),
         )
         
     except HTTPException:
         # Re-raise HTTP exceptions
         raise
+    except ProviderError as e:
+        # All LLM providers failed (rate limited / down)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"LLM service unavailable: {e}"
+        )
     except ConnectionError as e:
         # LLM connection issues
         raise HTTPException(

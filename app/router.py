@@ -3,10 +3,25 @@
 Routes questions to appropriate handlers based on intent detection.
 """
 
+import json
 import re
+import time
 from enum import Enum
 from typing import Any, Optional
 
+# Filler words stripped when reducing a free-text question to a search query.
+_SEARCH_STOPWORDS = {
+    "a", "an", "the", "is", "are", "am", "do", "does", "did", "you", "your",
+    "i", "my", "me", "we", "have", "has", "had", "can", "could", "would",
+    "in", "on", "of", "for", "to", "with", "and", "or", "any", "some", "this",
+    "that", "these", "those", "it", "its", "what", "which", "how", "much",
+    "many", "tell", "about", "status", "order", "track", "check", "search",
+    "find", "product", "products", "available", "availability", "stock",
+    "size", "sizes", "price", "cost", "buy", "get",
+}
+
+from app import tracing
+from app.contract import classify_legacy_context, resolve_grounding
 from app.database import DatabaseConnection
 from app.llm import LLMService
 from app.rag import RAGPipeline
@@ -90,12 +105,32 @@ class HybridRouter:
             return RouteType.RAG_ONLY
     
     def query(self, question: str, **kwargs) -> dict[str, Any]:
+        """Route question, generate answer, and emit a per-request trace."""
+        api_version = kwargs.pop("api_version", "1")
+        trace = tracing.start_trace(api_version=api_version)
+        started = time.perf_counter()
+        try:
+            result = self._dispatch(question, **kwargs)
+        except Exception as e:
+            trace.error = f"{type(e).__name__}: {e}"
+            trace.latency_ms = round((time.perf_counter() - started) * 1000, 1)
+            tracing.emit_trace(trace)
+            raise
+        trace.route = result.get("route_type")
+        trace.tools = list(result.get("tools_used", []))
+        trace.retrieval = result.get("retrieval", [])
+        trace.latency_ms = round((time.perf_counter() - started) * 1000, 1)
+        tracing.emit_trace(trace)
+        result["trace"] = trace.to_dict()
+        return result
+
+    def _dispatch(self, question: str, **kwargs) -> dict[str, Any]:
         """Route question and generate answer.
-        
+
         Args:
             question: User's question
             **kwargs: Additional routing hints (route_type, product_id, etc.)
-            
+
         Returns:
             Dictionary with answer, sources, and routing info:
             {
@@ -119,7 +154,12 @@ class HybridRouter:
         if route_type == RouteType.RAG_ONLY:
             return self._handle_rag_only(question, tenant_id=tenant_id)
         elif route_type == RouteType.TOOL_ONLY:
-            return self._handle_tool_only(question, **kwargs)
+            result = self._handle_tool_only(question, **kwargs)
+            if not result["tools_used"]:
+                # No structured data reached a tool (e.g. message-only payload).
+                # Answer from the tenant's documents instead of giving up.
+                return self._handle_rag_only(question, tenant_id=tenant_id)
+            return result
         elif route_type == RouteType.HYBRID:
             kwargs["tenant_id"] = tenant_id
             return self._handle_hybrid(question, **kwargs)
@@ -142,6 +182,8 @@ class HybridRouter:
         return {
             "answer": result["answer"],
             "sources": result.get("sources", []),
+            "retrieval": result.get("retrieval", []),
+            "context": result.get("context"),
             "route_type": RouteType.RAG_ONLY.value,
             "rag_used": True,
             "tools_used": []
@@ -162,16 +204,25 @@ class HybridRouter:
 
         # Host apps (e.g. Kickskraze) pass live catalog data so this bot
         # does not need their product IDs in the local Postgres schema.
+        # The declared shape (grounding.kind) decides how data is rendered;
+        # unknown kinds are rejected upstream, so keys are never guessed.
+        if kwargs.get("grounding"):
+            g = kwargs["grounding"]
+            resolved = resolve_grounding(g["kind"], g["data"])
+            return self._handle_grounding(question, resolved, kwargs.get("size"))
+
         if kwargs.get("product_context"):
-            return self._handle_product_context(
-                question,
-                kwargs["product_context"],
-                kwargs.get("size"),
-            )
-        
-        # Try to extract parameters from kwargs or question
-        # This is simplified - in production, use NER or structured input
-        
+            g = classify_legacy_context(kwargs["product_context"])
+            resolved = resolve_grounding(g.kind, g.data)
+            return self._handle_grounding(question, resolved, kwargs.get("size"))
+
+        # Callers may send a free-text message with no structured fields.
+        # Reduce it to keywords so the search tool still runs.
+        if not any(k in kwargs for k in ("product_id", "search_query", "order_id")):
+            derived = self._derive_search_query(question)
+            if derived:
+                kwargs["search_query"] = derived
+
         # Check inventory if product_id provided
         if "product_id" in kwargs:
             try:
@@ -193,8 +244,9 @@ class HybridRouter:
                     category=kwargs.get("category"),
                     max_results=kwargs.get("max_results", 10)
                 )
-                tools_used.append("search")
-                tool_results.append({"products": results})
+                if results:
+                    tools_used.append("search")
+                    tool_results.append({"products": results})
             except ToolError as e:
                 tool_results.append({"error": str(e)})
         
@@ -256,6 +308,8 @@ class HybridRouter:
         return {
             "answer": answer,
             "sources": rag_result.get("sources", []),
+            "retrieval": rag_result.get("retrieval", []),
+            "context": rag_result.get("context"),
             "route_type": RouteType.HYBRID.value,
             "rag_used": True,
             "tools_used": tool_result["tools_used"],
@@ -292,20 +346,39 @@ class HybridRouter:
             if "error" in result:
                 context_parts.append(f"Error: {result['error']}")
             elif "available" in result:
-                # Inventory result
-                if result["available"]:
-                    variants = result.get("variants", [])
-                    in_stock = [v for v in variants if v["in_stock"]]
-                    context_parts.append(
-                        f"{result['product_name']} is available. "
-                        f"{len(in_stock)} variants in stock."
-                    )
-                else:
-                    context_parts.append(f"{result.get('product_name', 'Product')} is out of stock.")
+                # Inventory result: keep per-size detail, otherwise
+                # size-specific questions can't be answered.
+                variants = result.get("variants", [])
+                lines = []
+                for v in variants:
+                    line = f"- size {v.get('size')}"
+                    if v.get("color"):
+                        line += f" ({v['color']})"
+                    line += f": {'in stock' if v.get('in_stock') else 'out of stock'}"
+                    if v.get("quantity") is not None:
+                        line += f", qty {v['quantity']}"
+                    lines.append(line)
+                header = f"{result.get('product_name', 'Product')}"
+                if result.get("brand"):
+                    header += f" by {result['brand']}"
+                header += " is in stock" if result.get("available") else " is out of stock"
+                if result.get("price") is not None:
+                    header += f" (${float(result['price']):.2f})"
+                header += "."
+                context_parts.append(header + ("\n" + "\n".join(lines) if lines else ""))
             elif "products" in result:
-                # Search result
+                # Search result: include names so the model can summarize.
                 products = result["products"]
-                context_parts.append(f"Found {len(products)} products.")
+                if not products:
+                    context_parts.append("No matching products found.")
+                else:
+                    listing = "; ".join(
+                        f"{p.get('name', 'Product')}"
+                        + (f" by {p['brand']}" if p.get("brand") else "")
+                        + (f" (${float(p['price']):.2f})" if p.get("price") is not None else "")
+                        for p in products
+                    )
+                    context_parts.append(f"Found {len(products)} product(s): {listing}.")
             elif "order_id" in result:
                 # Order status result
                 context_parts.append(
@@ -327,59 +400,51 @@ Provide a clear, helpful answer:"""
         # Let errors propagate - caller decides how to handle
         return self.llm.generate(prompt, temperature=0.7, timeout=30)
 
-    def _handle_product_context(
+    def _handle_grounding(
         self,
         question: str,
-        product_context: dict,
+        resolved,
         size: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Answer inventory/product questions from caller-supplied catalog data."""
-        answer = self._format_product_context_answer(question, product_context, size)
+        """Answer from validated, caller-declared grounding data.
+
+        Kinds with a registered renderer (product, order) answer
+        deterministically; kinds without one are answered by the LLM over the
+        raw JSON.
+        """
+        if resolved.render is not None:
+            answer = resolved.render(question, resolved.data, size)
+        else:
+            answer = self._synthesize_context_response(question, resolved.data)
+
         return {
             "answer": answer,
             "sources": [],
             "route_type": RouteType.TOOL_ONLY.value,
             "rag_used": False,
-            "tools_used": ["caller_catalog"],
-            "tool_results": [product_context],
+            "tools_used": [resolved.tool],
+            "tool_results": [resolved.data],
         }
 
-    def _format_product_context_answer(
-        self,
-        question: str,
-        ctx: dict,
-        size: Optional[str] = None,
-    ) -> str:
-        name = ctx.get("name") or "this product"
-        brand = ctx.get("brand") or ""
-        label = f"{brand} {name}".strip()
-        sizes = ctx.get("availableSizes") or ctx.get("available_sizes") or []
-        price = ctx.get("retailPrice", ctx.get("retail_price"))
-        in_stock = ctx.get("inStock") if "inStock" in ctx else ctx.get("in_stock")
+    def _synthesize_context_response(self, question: str, context: dict) -> str:
+        """Answer a question from an arbitrary caller-supplied data object."""
+        prompt = f"""Answer the user's question using only the data below.
+If the data does not contain the answer, say you don't have that information.
 
-        target = size
-        if not target:
-            match = re.search(r"\b\d+(?:\.\d+)?\b", question)
-            target = match.group(0) if match else None
+Question: {question}
 
-        size_labels = [str(s) for s in sizes]
-        price_bit = f" at ${float(price):.2f}" if price is not None else ""
+Data:
+{json.dumps(context, indent=2, default=str)}
 
-        if target:
-            if str(target) in size_labels:
-                return f"Yes, size {target} for {label} is in stock{price_bit}."
-            available = ", ".join(size_labels) or "none"
-            return (
-                f"Size {target} for {label} is currently out of stock. "
-                f"Available sizes: {available}."
-            )
+Answer:"""
+        return self.llm.generate(prompt, temperature=0.3, timeout=30).strip()
 
-        if in_stock is False or not size_labels:
-            return f"{label} is currently out of stock."
+    def _derive_search_query(self, question: str) -> Optional[str]:
+        """Reduce a free-text question to keywords for the product search tool."""
+        words = re.sub(r"[^a-z0-9\s]", " ", question.lower()).split()
+        terms = [w for w in words if w not in _SEARCH_STOPWORDS and not w.isdigit()]
+        return " ".join(terms).strip() or None
 
-        available = ", ".join(size_labels)
-        return f"{label} is in stock{price_bit}. Available sizes: {available}."
-    
     def _combine_rag_and_tools(
         self,
         question: str,
