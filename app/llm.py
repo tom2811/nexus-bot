@@ -22,12 +22,12 @@ class LLMService:
         self.groq_api_key = os.getenv("GROQ_API_KEY")
         if self.groq_api_key:
             self.provider = "groq"
-            self.base_url = base_url or "https://api.groq.com/openai/v1"
-            self.model = model or os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+            self.base_url = (base_url or "https://api.groq.com/openai/v1").strip()
+            self.model = (model or os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")).strip()
         else:
             self.provider = "ollama"
-            self.base_url = base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-            self.model = model or os.getenv("OLLAMA_MODEL", "llama3.2")
+            self.base_url = (base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")).strip()
+            self.model = (model or os.getenv("OLLAMA_MODEL", "llama3.2")).strip()
 
         self.timeout = timeout
 
