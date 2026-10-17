@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from app import __version__
 from app.main import app
 
 
@@ -413,7 +414,7 @@ class TestAPIDocumentation:
         assert response.status_code == 200
         schema = response.json()
         assert schema["info"]["title"] == "Nexus-bot"
-        assert schema["info"]["version"] == "0.2.0"
+        assert schema["info"]["version"] == __version__
     
     def test_docs_endpoint(self, client):
         """Test Swagger UI is available."""

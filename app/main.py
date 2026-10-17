@@ -10,6 +10,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from app import __version__
 from app.api import init_router, router
 
 # Configure logging
@@ -60,7 +61,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Nexus-bot",
     description="Hybrid AI assistant backend combining RAG and controlled tools",
-    version="0.2.0",
+    version=__version__,
     lifespan=lifespan,
 )
 

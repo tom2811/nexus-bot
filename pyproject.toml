@@ -1,6 +1,6 @@
 [project]
 name = "nexus-bot"
-version = "0.1.0"
+version = "1.0.0"
 description = "Hybrid AI assistant backend combining RAG and controlled tools"
 authors = [
     { name = "tom2811" }
