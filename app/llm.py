@@ -1,24 +1,30 @@
-"""LLM service supporting Groq (cloud) and Ollama (local)."""
+"""LLM service facade over the resilient provider chain.
+
+Public attributes (`provider`, `base_url`, `model`, `timeout`) are preserved for
+callers and tests; `generate()` delegates retry/fallback to `ProviderChain`.
+"""
 
 import os
-import httpx
 from typing import Optional
+
+from app.providers import (
+    GroqProvider,
+    OllamaProvider,
+    ProviderChain,
+    build_default_chain,
+)
 
 
 class LLMService:
-    """Service for LLM inference using Groq or Ollama."""
+    """LLM inference via a retrying, fallback-capable provider chain."""
 
     def __init__(
         self,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
-        timeout: int = 60,
+        timeout: Optional[int] = None,
+        chain: Optional[ProviderChain] = None,
     ):
-        """Initialize LLM client.
-
-        If GROQ_API_KEY is present, defaults to Groq Cloud API.
-        Otherwise, falls back to local Ollama.
-        """
         self.groq_api_key = os.getenv("GROQ_API_KEY")
         if self.groq_api_key:
             self.provider = "groq"
@@ -29,7 +35,18 @@ class LLMService:
             self.base_url = (base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")).strip()
             self.model = (model or os.getenv("OLLAMA_MODEL", "llama3.2")).strip()
 
-        self.timeout = timeout
+        self.timeout = timeout if timeout is not None else int(os.getenv("LLM_TIMEOUT", "60"))
+
+        if chain is not None:
+            self.chain = chain
+        elif base_url or model:
+            # Explicit single target override (caller pinned a provider/model).
+            if self.provider == "groq":
+                self.chain = ProviderChain([GroqProvider(self.model, base_url=self.base_url)])
+            else:
+                self.chain = ProviderChain([OllamaProvider(self.model, base_url=self.base_url)])
+        else:
+            self.chain = ProviderChain(build_default_chain())
 
     def generate(
         self,
@@ -38,83 +55,11 @@ class LLMService:
         temperature: float = 0.7,
         timeout: Optional[int] = None,
     ) -> str:
-        """Generate a response from the LLM."""
+        """Generate a response, retrying/falling back across providers."""
         request_timeout = timeout if timeout is not None else self.timeout
-
-        if self.provider == "groq":
-            return self._generate_groq(prompt, system_prompt, temperature, request_timeout)
-        return self._generate_ollama(prompt, system_prompt, temperature, request_timeout)
-
-    def _generate_groq(
-        self,
-        prompt: str,
-        system_prompt: Optional[str],
-        temperature: float,
-        timeout: int,
-    ) -> str:
-        messages = []
+        messages: list[dict] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
-
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": temperature,
-        }
-
-        headers = {
-            "Authorization": f"Bearer {self.groq_api_key.strip()}",
-            "Content-Type": "application/json",
-        }
-
-        try:
-            url = f"{self.base_url.rstrip('/')}/chat/completions"
-            with httpx.Client(timeout=timeout) as client:
-                response = client.post(url, json=payload, headers=headers)
-                if response.status_code != 200:
-                    print(f"GROQ ERROR ({response.status_code}): {response.text} | model={self.model}")
-                response.raise_for_status()
-                data = response.json()
-                return data["choices"][0]["message"]["content"]
-        except httpx.ConnectError:
-            raise ConnectionError("Cannot connect to Groq API.")
-        except httpx.HTTPStatusError as e:
-            raise RuntimeError(f"Groq API error ({e.response.status_code}): {e.response.text}")
-        except httpx.TimeoutException:
-            raise TimeoutError(f"Groq request timed out after {timeout}s")
-
-    def _generate_ollama(
-        self,
-        prompt: str,
-        system_prompt: Optional[str],
-        temperature: float,
-        timeout: int,
-    ) -> str:
-        payload = {
-            "model": self.model,
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "temperature": temperature,
-            },
-        }
-
-        if system_prompt:
-            payload["system"] = system_prompt
-
-        url = f"{self.base_url.rstrip('/')}/api/generate"
-        try:
-            with httpx.Client(timeout=timeout) as client:
-                response = client.post(url, json=payload)
-                response.raise_for_status()
-                return response.json()["response"]
-        except httpx.ConnectError:
-            raise ConnectionError(
-                "Cannot connect to Ollama. Is it running? Try: ollama serve"
-            )
-        except httpx.HTTPStatusError as e:
-            raise RuntimeError(f"Ollama API error: {e}")
-        except httpx.TimeoutException:
-            raise TimeoutError(f"LLM request timed out after {timeout}s")
-
+        result = self.chain.complete(messages, temperature, request_timeout)
+        return result.text.strip()
