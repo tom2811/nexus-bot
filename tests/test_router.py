@@ -20,6 +20,10 @@ TEST_DB_CONFIG = {
     "password": os.getenv("DB_PASSWORD", ""),
 }
 
+# The router searches the caller's tenant collection, so seeded documents and
+# routed queries must share one tenant name.
+TEST_TENANT = "test_router"
+
 
 def is_postgres_available():
     """Check if PostgreSQL is available for testing."""
@@ -65,7 +69,7 @@ def vector_store():
     
     store = VectorStore(
         persist_directory=temp_dir,
-        collection_name="test_router"
+        collection_name=TEST_TENANT
     )
     
     # Add sample documents
@@ -183,7 +187,7 @@ def test_detect_intent_case_insensitive(router):
 @requires_postgres
 def test_route_rag_only(router):
     """Test RAG-only routing."""
-    result = router.query("What is the return policy?")
+    result = router.query("What is the return policy?", tenant_id=TEST_TENANT)
     
     assert result["route_type"] == RouteType.RAG_ONLY.value
     assert result["rag_used"] is True
@@ -195,7 +199,7 @@ def test_route_rag_only(router):
 @requires_postgres
 def test_route_rag_with_sources(router):
     """Test RAG routing includes sources."""
-    result = router.query("What is the shipping policy?")
+    result = router.query("What is the shipping policy?", tenant_id=TEST_TENANT)
     
     assert result["route_type"] == RouteType.RAG_ONLY.value
     assert "sources" in result
@@ -259,7 +263,8 @@ def test_route_hybrid(router):
     result = router.query(
         "Is product available and what's the return policy?",
         product_id=1,
-        size="10"
+        size="10",
+        tenant_id=TEST_TENANT,
     )
     
     assert result["route_type"] == RouteType.HYBRID.value
@@ -273,7 +278,8 @@ def test_route_hybrid_combines_sources(router):
     """Test hybrid routing combines sources from RAG and tools."""
     result = router.query(
         "Check inventory and shipping policy",
-        product_id=1
+        product_id=1,
+        tenant_id=TEST_TENANT,
     )
     
     assert result["route_type"] == RouteType.HYBRID.value
